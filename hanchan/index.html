@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>:root{padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>評価の成績</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 並び：縦1列に、上に状態、その下にグラフ5つ。色は、線2本ぶんの2色と、着順の4段（1つの色の濃淡）。色の値は、solo_report.html と同じ */
+:root{--bg:#f8f8f6;--fg:#101414;--fg2:#4a5354;--muted:#8a9192;--rule:#e6e7e3;--axis:#c5c7c2;--past:#aeb2ae;
+--now:#2a78d6;--a2:#c2620a;--r1:#17468a;--r2:#2a78d6;--r3:#86b3e8;--r4:#cfdff3;
+--sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121413;--fg:#eef0ee;--fg2:#b4bbb9;
+--muted:#7f8886;--rule:#232726;--axis:#3a403e;--past:#5d6462;--now:#3987e5;--a2:#e8933a;
+--r1:#a9cdf8;--r2:#5b9cea;--r3:#2f66ad;--r4:#1e3d66;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121413;--fg:#eef0ee;--fg2:#b4bbb9;--muted:#7f8886;--rule:#232726;--axis:#3a403e;
+--past:#5d6462;--now:#3987e5;--a2:#e8933a;--r1:#a9cdf8;--r2:#5b9cea;--r3:#2f66ad;--r4:#1e3d66;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans);padding-block:20px 64px;
+padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;
+background:var(--bg)}
+main{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:32px}
+h2{font-size:15px;font-weight:600;margin:0 0 6px}
+dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 14px;margin:0}
+dt{color:var(--fg2)}dd{margin:0;font-weight:600}dd small{font-weight:400;color:var(--fg2);font-size:13px}
+p{margin:0;color:var(--fg2)}
+svg{display:block;width:100%;height:auto}
+svg text{fill:var(--muted);font-size:10px;font-family:var(--sans);font-variant-numeric:tabular-nums}
+svg text.end{font-size:11px;font-weight:600}
+svg text.ref{fill:var(--fg2);font-size:11px}
+</style>
+<main id="page"><p>数字を読んでいます</p></main>
+<script>
+"use strict";
+// 4人打ちの学習の、評価の成績の画面。数字は、同じ場所の data.json（riichienv.ai.learn の report_data が書く）から読む。
+// ここには、見た目と描き方だけを書く。横は、どのグラフも更新の回数。
+const W = 358, H = 150, LEFT = 40, RIGHT = 122, TOP = 8, BOTTOM = 20; // グラフの大きさと余白（右は、線の名前と最新の数字）
+const page = document.getElementById("page");
+const last = (a) => a[a.length - 1];
+
+// lo〜hi を、切りのいい数で、about 個ほどに刻んだ目盛り
+function ticks(lo, hi, about) {
+  const raw = Math.max(hi - lo, 1e-9) / about;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * power).find((s) => s >= raw);
+  const first = Math.ceil(lo / step - 1e-9) * step;
+  const out = [];
+  for (let i = 0; i <= Math.floor((hi - first) / step + 1e-9); i++) out.push(first + i * step);
+  return out;
+}
+
+// 右端の名前が重ならないように、縦の位置を、上から順に 12 ずつ離す
+function spread(labels) {
+  const sorted = labels.slice().sort((a, b) => a.y - b.y);
+  for (let i = 1; i < sorted.length; i++) sorted[i].y = Math.max(sorted[i].y, sorted[i - 1].y + 12);
+  return sorted;
+}
+
+function draw(d) {
+  const evals = d.evals;
+  // 上の段：項目と、値と、添え書き（solo_report.html と同じ形）
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const rows = (d.state || []).map(([k, v, note]) => `<dt>${esc(k)}</dt><dd>${esc(v)}${note ? `<small>　${esc(note)}</small>` : ""}</dd>`);
+  const state = rows.length ? `<header><dl>${rows.join("")}</dl></header>` : "";
+  if (!evals.length) {
+    page.innerHTML = state + "<p>まだ評価がありません</p>";
+    return;
+  }
+  const xs = evals.map((e) => e.update);
+  const x0 = Math.min(0, xs[0]), x1 = Math.max(last(xs), x0 + 1);
+  const px = (x) => LEFT + ((x - x0) / (x1 - x0)) * (W - LEFT - RIGHT);
+  const xAxis = () =>
+    ticks(x0, x1, 4)
+      .map((t) => `<text x="${px(t)}" y="${H - 6}" text-anchor="middle">${t}</text>`)
+      .join("");
+
+  // 線のグラフ：series は { name, color, pick }。ref は、横に引く目安の線 { value, name }。flip は、小さいほど上。
+  // show は、線の端の数字の書き方、tick は、縦の目盛りの書き方
+  function lines(title, series, { ref = null, flip = false, show, tick = show }) {
+    const values = series.flatMap((s) => evals.map(s.pick)).concat(ref ? [ref.value] : []);
+    let lo = Math.min(...values), hi = Math.max(...values);
+    const pad = (hi - lo || Math.abs(hi) || 1) * 0.12;
+    const marks = ticks(lo - pad, hi + pad, 4);
+    lo = Math.min(lo - pad, marks[0]);
+    hi = Math.max(hi + pad, last(marks));
+    const py = (v) => {
+      const t = (v - lo) / (hi - lo);
+      return TOP + (flip ? t : 1 - t) * (H - TOP - BOTTOM);
+    };
+    let g = marks
+      .map(
+        (t) =>
+          `<line x1="${LEFT}" x2="${W - RIGHT}" y1="${py(t)}" y2="${py(t)}" stroke="var(--rule)"/>` +
+          `<text x="${LEFT - 5}" y="${py(t) + 3}" text-anchor="end">${tick(t)}</text>`
+      )
+      .join("");
+    const labels = [];
+    if (ref) {
+      g += `<line x1="${LEFT}" x2="${W - RIGHT}" y1="${py(ref.value)}" y2="${py(ref.value)}" stroke="var(--past)" stroke-width="2" stroke-dasharray="4 3"/>`;
+      labels.push({ y: py(ref.value), text: ref.name, cls: "ref", fill: "" });
+    }
+    for (const s of series) {
+      const pts = evals.map((e) => [px(e.update), py(s.pick(e))]);
+      g += `<polyline fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${pts.map((p) => p.join(",")).join(" ")}"/>`;
+      const [ex, ey] = last(pts);
+      g += `<circle cx="${ex}" cy="${ey}" r="4" fill="${s.color}" stroke="var(--bg)" stroke-width="2"/>`;
+      labels.push({ y: ey, text: `${s.name} ${show(s.pick(last(evals)))}`, cls: "end", fill: s.color });
+    }
+    g += spread(labels)
+      .map((l) => `<text class="${l.cls}" x="${W - RIGHT + 9}" y="${l.y + 4}"${l.fill ? ` style="fill:${l.fill}"` : ""}>${l.text}</text>`)
+      .join("");
+    return `<section><h2>${title}</h2><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${title}">${g}${xAxis()}</svg></section>`;
+  }
+
+  // 着順分布：評価1回につき棒1本。下から1位・2位・3位・4位の割合を積む
+  function ranks() {
+    const title = "着順分布";
+    const top = TOP, bottom = H - BOTTOM, py = (share) => bottom - share * (bottom - top);
+    const slot = (W - LEFT - RIGHT) / Math.max(evals.length, 1);
+    const bar = Math.max(2, Math.min(18, slot - 2));
+    const at = (i) => (evals.length === 1 ? px(xs[0]) : px(xs[i])) - bar / 2;
+    let g = [0, 0.25, 0.5, 0.75, 1]
+      .map(
+        (t) =>
+          `<line x1="${LEFT}" x2="${W - RIGHT}" y1="${py(t)}" y2="${py(t)}" stroke="var(--rule)"/>` +
+          `<text x="${LEFT - 5}" y="${py(t) + 3}" text-anchor="end">${t * 100}%</text>`
+      )
+      .join("");
+    const labels = [];
+    evals.forEach((e, i) => {
+      let sum = 0;
+      e.ranks.forEach((share, k) => {
+        const y1 = py(sum + share), height = Math.max(py(sum) - y1 - 1, 0); // 段の間に、地の色のすき間を1つ
+        g += `<rect x="${at(i)}" y="${y1}" width="${bar}" height="${height}" fill="var(--r${k + 1})"/>`;
+        if (i === evals.length - 1)
+          labels.push({ y: py(sum + share / 2), text: `${k + 1}位 ${(share * 100).toFixed(1)}%`, cls: "end", fill: "var(--fg)", k });
+        sum += share;
+      });
+    });
+    // 右端の名前：色の印と、順位と、最新の割合（上が4位）
+    const placed = spread(labels);
+    g += placed
+      .map(
+        (l) =>
+          `<rect x="${W - RIGHT + 9}" y="${l.y - 5}" width="9" height="9" fill="var(--r${l.k + 1})"/>` +
+          `<text class="end" x="${W - RIGHT + 23}" y="${l.y + 4}" style="fill:var(--fg)">${l.text}</text>`
+      )
+      .join("");
+    return `<section><h2>${title}</h2><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${title}">${g}${xAxis()}</svg></section>`;
+  }
+
+  const pct = (v) => (v * 100).toFixed(1) + "%";
+  const whole = (v) => Math.round(v * 100) + "%";
+  const rank = (v) => v.toFixed(2);
+  const points = (v) => String(Math.round(v));
+  const now = "var(--now)", other = "var(--a2)";
+  page.innerHTML = [
+    state,
+    lines("平均着順", [{ name: "平均着順", color: now, pick: (e) => e.rank_mean }], { ref: { value: 2.5, name: "2.50" }, flip: true, show: rank }),
+    lines("和銃分布", [{ name: "和了率", color: now, pick: (e) => e.win }, { name: "放銃率", color: other, pick: (e) => e.deal_in }], { show: pct, tick: whole }),
+    lines("平均打点", [{ name: "平均打点", color: now, pick: (e) => e.win_points }, { name: "平均放銃打点", color: other, pick: (e) => e.deal_in_points }], { show: points }),
+    lines("リーチ率・副露率", [{ name: "リーチ率", color: now, pick: (e) => e.riichi }, { name: "副露率", color: other, pick: (e) => e.call_rate }], { show: pct, tick: whole }),
+    ranks(),
+  ].join("");
+}
+
+fetch("data.json", { cache: "no-store" })
+  .then((r) => r.json())
+  .then(draw)
+  .catch(() => {
+    page.innerHTML = "<p>数字を読めませんでした</p>";
+  });
+</script>
